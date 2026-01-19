@@ -38,7 +38,6 @@ def generate_report_data():
     # simulation_core: y_red = 5.0 * tiled_f. (f-50)*5.
     # 0.2Hz deviation -> 5 * 0.2 = 1.0 p.u.
     # So y_red IS the p.u. regulating power.
-    y_red = sim.y_red
     # --- Normalization / limits (consistent across Q1-Q7/Q12) ---
     P_MAX_EV = 7.0
     P_BID_EV = P_MAX_EV / 1.1  # per statement in task
@@ -50,7 +49,6 @@ def generate_report_data():
 
     plt.figure(figsize=(10, 6))
     plt.hist(y_red, bins=100, density=True, alpha=0.7, color='blue')
-    plt.title("Q1: Distribution of Normalized Regulating Power")
     plt.title(f"Q1: Distribution of Normalized Regulating Power ({clip_label})")
     plt.xlabel("Regulating Power (p.u.)")
     plt.ylabel("Density")
@@ -64,7 +62,6 @@ def generate_report_data():
     # P(t) = 7kW * y_red(t).
     # E(t) = Integral P(t) dt.
     dt_h = sim.dt_h
-    p_profile_kw = 7.0 * y_red # Positive = Charge?
     p_profile_kw = P_BID_EV * y_red  # grid-side requested power per EV
     p_profile_kw = np.clip(p_profile_kw, -P_MAX_EV, P_MAX_EV)
     # y_red > 0 (High Freq) -> Charge.
@@ -89,7 +86,6 @@ def generate_report_data():
         # rolling sum of Power * dt
         e_rolling = p_series.rolling(window=steps).sum() * dt_h
         # Convert to SOC deviation %
-        soc_dev = e_rolling / 46.0 * 100.0
         soc_dev = e_rolling / sim.BATTERY_CAP * 100.0
         soc_dev = soc_dev.dropna().values
         data_q3.append(soc_dev)
@@ -127,11 +123,6 @@ def generate_report_data():
     # P_bid = 7kW / 1.1 = 6.36 kW.
     # P_req_car = P_bid * y_red.
 
-    p_bid_car = sim.P_BID
-    p_req_car_uniform = p_bid_car * y_red
-    p_abs_uniform = np.abs(p_req_car_uniform)
-    # Clip to max 7kW
-    p_abs_uniform = np.clip(p_abs_uniform, 0, 7.0)
     p_bid_car = P_BID_EV
     p_grid = p_bid_car * y_red
     p_grid = np.clip(p_grid, -P_MAX_EV, P_MAX_EV)
@@ -139,15 +130,10 @@ def generate_report_data():
 
     eta = eff_func(p_abs)
 
-    eff_uniform_t = eff_func(p_abs_uniform)
     p_bat = np.zeros_like(p_grid)
     mask_ch = p_grid >= 0
     mask_dis = ~mask_ch
 
-    # Avg Efficiency = 1 - (Total Loss / Total Energy)
-    total_energy = np.sum(p_abs_uniform)
-    total_loss_uniform = np.sum(p_abs_uniform * (1.0 - eff_uniform_t))
-    eta_avg_uniform = 1.0 - (total_loss_uniform / total_energy)
     p_bat[mask_ch] = eta[mask_ch] * p_grid[mask_ch]
     p_bat[mask_dis] = p_grid[mask_dis] / np.maximum(eta[mask_dis], 1e-6)
 
@@ -169,7 +155,6 @@ def generate_report_data():
 
     target_eta_val = eta_avg_uniform + 0.9 * (eta_smart_inf - eta_avg_uniform)
 
-    n_values = [1, 2, 5, 10, 20, 50, 100, 200]
     n_values = list(range(1, 301))
     eta_smart_vals = []
 
@@ -200,20 +185,6 @@ def generate_report_data():
         # If remainder pushes cars > P_opt?
         # Simplified Q6: Just P_opt and remainder.
 
-        loss_full = k_full * p_opt * (1.0 - eta_max)
-
-        # Remainder car efficiency
-        # Handle case where p_rem > P_MAX (shouldn't happen if we fill N cars?
-        # Wait, if demand is huge? P_bid = 7/1.1. P_req can be 7/1.1 * 1.0.
-        # P_opt is usually < P_max.
-        # So yes, we might need more than P_opt per car.
-
-        # Correct logic:
-        # P_req distributed to N cars.
-        # Sort SOC -> Activation.
-        # Ideally operate at P_opt.
-        # If P_req < N * P_opt: k cars at P_opt, 1 at remainder.
-        # If P_req > N * P_opt: All N cars > P_opt.
         def bat_throughput(power_grid, eta_val, sign_val):
             p_grid_signed = power_grid * sign_val
             p_bat_local = np.where(
@@ -226,7 +197,6 @@ def generate_report_data():
         # Case 1: P_req <= N * P_opt
         mask_low = p_req_abs <= (N * p_opt)
 
-        loss_smart = np.zeros_like(p_req_abs)
         e_grid_total = np.sum(p_req_abs)
         e_bat_total = 0.0
 
@@ -236,8 +206,6 @@ def generate_report_data():
         p_rem_low = p_low - k_low * p_opt
         p_rem_low = np.clip(p_rem_low, 0.0, P_MAX_EV)
 
-        l_low = k_low * p_opt * (1.0 - eta_max) + p_rem_low * (1.0 - eff_func(p_rem_low))
-        loss_smart[mask_low] = l_low
         eta_rem = eff_func(p_rem_low)
         bat_low = k_low * bat_throughput(p_opt, eta_max, p_sign[mask_low])
         bat_low += bat_throughput(p_rem_low, eta_rem, p_sign[mask_low])
@@ -253,14 +221,11 @@ def generate_report_data():
         # Uniform spread above P_opt is likely best for convexity?
         # Let's assume uniform above P_opt.
         p_avg_high = p_high / N
-        l_high = p_high * (1.0 - eff_func(p_avg_high))
-        loss_smart[~mask_low] = l_high
         p_avg_high = np.clip(p_avg_high, 0.0, P_MAX_EV)
         eta_high = eff_func(p_avg_high)
         bat_high = N * bat_throughput(p_avg_high, eta_high, p_sign[~mask_low])
         e_bat_total += np.sum(bat_high)
 
-        eta_N = 1.0 - (np.sum(loss_smart) / np.sum(p_req_abs))
         eta_N = e_grid_total / e_bat_total
         eta_smart_vals.append(eta_N)
 
@@ -362,7 +327,6 @@ def generate_report_data():
     # Accumulate
     # We need to sum changes at same time
     ts_grouped = ts.groupby(ts.index).sum()
-    ts_reindexed = ts_grouped.reindex(full_idx, method=None).fillna(0).cumsum()
     sim_start = full_idx[0]
     initial_active = 0
     for sessions in sim.cars.values():
@@ -419,7 +383,6 @@ def generate_report_data():
     # Energy: Sum of (SOC_start - SOC_stop) * Cap
     total_soc_diff = (df_drive['SOC_START'] - df_drive['SOC_STOP']).sum()
     total_energy_drive = total_soc_diff / 100.0 * sim.BATTERY_CAP
-    consumption_kwh_km = total_energy_drive / total_dist
     consumption_kwh_km = 0.2
     print(f"Calculated Consumption: {consumption_kwh_km:.4f} kWh/km")
 
@@ -431,12 +394,6 @@ def generate_report_data():
     # Q11: Revenue
     # Cap = N_min * 7kW. (Wait, Coincidence Factor IS N_min).
     # Revenue = Cap(MW) * Price * Hours.
-    price = 18.0 # Eur/MW/h
-
-    # Scale factor for Monthly Estimate
-    # 5 days simulated -> Month (31 days)
-    # scale = 31 / 5 = 6.2
-    scale_factor = 31.0 / 5.0
     price_df = pd.read_csv('data/fcr_price_month.csv', parse_dates=['timestamp'])
     price_df = price_df.set_index('timestamp').sort_index()
     month_start = price_df.index.min()
@@ -447,16 +404,12 @@ def generate_report_data():
 
     # 1h Revenue
     # Series resolution is 1 min. Price is per Hour. dt = 1/60 h.
-    cap_1h_mw = avail_1h.values * 7.0 / 1000.0
-    rev_1h = np.sum(cap_1h_mw * 18.0 / 60.0) * scale_factor
     avail_1h_month = avail_1h.reindex(full_idx_month, method='ffill')
     avail_4h_month = avail_4h.reindex(full_idx_month, method='ffill')
     cap_1h_mw = avail_1h_month.values * P_MAX_EV / 1000.0
     rev_1h = np.sum(cap_1h_mw * price_1min.values / 60.0) * scale_factor
 
     # 4h Revenue
-    cap_4h_mw = avail_4h.values * 7.0 / 1000.0
-    rev_4h = np.sum(cap_4h_mw * 18.0 / 60.0) * scale_factor
     cap_4h_mw = avail_4h_month.values * P_MAX_EV / 1000.0
     rev_4h = np.sum(cap_4h_mw * price_1min.values / 60.0) * scale_factor
 
@@ -473,9 +426,6 @@ def generate_report_data():
     # Use sim.y_red.
     # Reconstruct P_bid(t).
     # 1h Profile:
-    avail_1h_re = avail_1h.reindex(sim.sim_index, method='ffill').values
-    p_bid_1h = avail_1h_re * sim.P_BID
-    p_req_1h = p_bid_1h * y_red
     month_end_sim = price_df.index.max() + pd.Timedelta(hours=1) - pd.Timedelta(seconds=10)
     sim_month_mask = (sim.sim_index >= month_start) & (sim.sim_index <= month_end_sim)
     sim_month_index = sim.sim_index[sim_month_mask]
@@ -488,9 +438,6 @@ def generate_report_data():
     virt_km_per_car_1h = virt_km_1h / sim.n_cars
 
     # 4h Profile
-    avail_4h_re = avail_4h.reindex(sim.sim_index, method='ffill').values
-    p_bid_4h = avail_4h_re * sim.P_BID
-    p_req_4h = p_bid_4h * y_red
     avail_4h_re = avail_4h.reindex(sim_month_index, method='ffill').values
     p_bid_4h = avail_4h_re * P_BID_EV
     p_req_4h = p_bid_4h * y_red_month
@@ -519,7 +466,6 @@ def generate_report_data():
             loss = v_base - v_virt
             losses.append(loss)
 
-        print(f"Avg Residual Loss: {np.mean(losses):.2f} EUR")
         avg_residual_loss = float(np.mean(losses))
         print(f"Avg Residual Loss: {avg_residual_loss:.2f} EUR/EV")
 
@@ -596,8 +542,6 @@ def generate_report_data():
     # Report total dL per scenario.
 
     base_loss = results['no_fcr']['age_cyc'] + results['no_fcr']['age_cal']
-    print(f"Baseline Aging (5 days): {base_loss:.6f}")
-    print(f"Baseline Aging (Month Est): {base_loss * scale_factor:.6f}")
     base_loss_avg = base_loss / sim.n_cars
     print(f"Baseline Aging (5 days, fleet avg): {base_loss_avg:.6f}")
     print(f"Baseline Aging (Month Est, fleet avg): {base_loss_avg * scale_factor:.6f}")
@@ -605,8 +549,6 @@ def generate_report_data():
     for key, res in results.items():
         if key == 'no_fcr': continue
         tot = res['age_cyc'] + res['age_cal']
-        increase = (tot - base_loss) / base_loss * 100.0
-        print(f"Scenario {key} Aging (Month Est): {tot * scale_factor:.6f} (+{increase:.2f}%)")
         tot_avg = tot / sim.n_cars
         increase = (tot_avg - base_loss_avg) / base_loss_avg * 100.0
         print(f"Scenario {key} Aging (Month Est, fleet avg): {tot_avg * scale_factor:.6f} (+{increase:.2f}%)")
