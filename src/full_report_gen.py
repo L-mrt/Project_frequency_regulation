@@ -71,7 +71,7 @@ def generate_report_data():
         # rolling sum of Power * dt
         e_rolling = p_series.rolling(window=steps).sum() * dt_h
         # Convert to SOC deviation %
-        soc_dev = e_rolling / 40.0 * 100.0
+        soc_dev = e_rolling / 46.0 * 100.0
         soc_dev = soc_dev.dropna().values
         data_q3.append(soc_dev)
         labels_q3.append(f"{w}h")
